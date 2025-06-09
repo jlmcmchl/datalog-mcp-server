@@ -330,4 +330,4 @@ To extend the server:
 
 ## License
 
-This implementation follows WPILib's BSD 3-Clause license terms for compatibility with FRC tooling.
+This project is released under the MIT License, making it freely available for FRC teams and educational use.
