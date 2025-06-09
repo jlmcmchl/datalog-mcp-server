@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import time
+import struct
 from collections import defaultdict
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -23,6 +24,22 @@ from wpiutil.log import DataLogReader, DataLogRecord
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class StructField:
+    """Structure field definition"""
+
+    name: str
+    type: str
+
+
+@dataclass
+class StructSchema:
+    """Structure schema definition"""
+
+    name: str
+    fields: List[StructField]
 
 
 @dataclass
@@ -95,6 +112,9 @@ class DataLogManager:
         self._preloaded_signals: set = set()
         self.access_lock = threading.Lock()
 
+        # Struct schema support
+        self.struct_schemas: Dict[str, StructSchema] = {}
+
     def load_datalog(self, filename: str) -> bool:
         """Load a datalog file and parse its contents"""
         try:
@@ -117,6 +137,26 @@ class DataLogManager:
             logger.error(f"Error loading datalog {filename}: {e}")
             return False
 
+    def _parse_schema_definition(self, schema_string: str) -> List[StructField]:
+        """Parse a schema definition string into fields"""
+        fields = []
+
+        # Schema format: "type1 field1;type2 field2;..."
+        field_definitions = schema_string.split(";")
+
+        for field_def in field_definitions:
+            field_def = field_def.strip()
+            if not field_def:
+                continue
+
+            # Split on last space to get type and name
+            parts = field_def.rsplit(" ", 1)
+            if len(parts) == 2:
+                field_type, field_name = parts
+                fields.append(StructField(field_name, field_type))
+
+        return fields
+
     def _parse_log(self):
         """Parse the datalog and build signal information"""
         entries = {}  # entry_id -> signal info
@@ -134,6 +174,13 @@ class DataLogManager:
                     )
                 except json.JSONDecodeError:
                     metadata = {"raw_metadata": start_data.metadata}
+
+                # Handle struct schema definitions
+                if signal_type == "structschema" and signal_name.startswith(
+                    "/.schema/struct:"
+                ):
+                    # This is a schema definition - we'll process it when we encounter data
+                    pass
 
                 signal_info = SignalInfo(
                     name=signal_name,
@@ -163,6 +210,20 @@ class DataLogManager:
                     )
                     signal_info.record_count += 1
 
+                    # Handle schema definitions
+                    if (
+                        signal_info.type == "structschema"
+                        and signal_info.name.startswith("/.schema/struct:")
+                    ):
+                        schema_name = signal_info.name.replace("/.schema/struct:", "")
+                        schema_string = self._decode_record_value(record, "string")
+                        if schema_string:
+                            fields = self._parse_schema_definition(schema_string)
+                            self.struct_schemas[schema_name] = StructSchema(
+                                schema_name, fields
+                            )
+                        continue
+
                     # Decode value based on type
                     value = self._decode_record_value(record, signal_info.type)
 
@@ -183,6 +244,10 @@ class DataLogManager:
                 return record.getDouble()
             elif signal_type == "string":
                 return record.getString()
+            elif signal_type.startswith("struct:"):
+                # Handle struct types
+                struct_name = signal_type[7:]  # Remove "struct:" prefix
+                return self._decode_struct(record, struct_name)
             elif signal_type.endswith("[]"):
                 # Array types
                 base_type = signal_type[:-2]
@@ -194,12 +259,200 @@ class DataLogManager:
                     return record.getDoubleArray()
                 elif base_type == "string":
                     return record.getStringArray()
+                elif base_type.startswith("struct:"):
+                    # Struct array - decode each element
+                    raw_data = record.getRaw()
+                    struct_name = base_type[7:]
+                    return self._decode_struct_array(raw_data, struct_name)
             else:
                 # Raw data for unknown types
-                return record.getRaw()
+                raw_data = record.getRaw()
+                # Try to make it JSON-serializable
+                if isinstance(raw_data, bytes):
+                    try:
+                        # Try to decode as UTF-8 first
+                        return raw_data.decode("utf-8")
+                    except UnicodeDecodeError:
+                        # If that fails, return as hex string
+                        return raw_data.hex()
+                return raw_data
         except Exception as e:
             logger.warning(f"Error decoding record of type {signal_type}: {e}")
             return None
+
+    def _decode_struct(self, record: DataLogRecord, struct_name: str) -> Dict[str, Any]:
+        """Decode a struct from binary data"""
+        if struct_name not in self.struct_schemas:
+            logger.warning(f"Unknown struct type: {struct_name}")
+            raw_data = record.getRaw()
+            if isinstance(raw_data, bytes):
+                return {"_raw_hex": raw_data.hex(), "_struct_type": struct_name}
+            return {"_raw": raw_data, "_struct_type": struct_name}
+
+        schema = self.struct_schemas[struct_name]
+        raw_data = record.getRaw()
+
+        if not isinstance(raw_data, bytes):
+            return {
+                "_error": "Expected bytes data for struct",
+                "_struct_type": struct_name,
+            }
+
+        try:
+            return self._decode_struct_from_bytes(raw_data, schema)
+        except Exception as e:
+            logger.warning(f"Error decoding struct {struct_name}: {e}")
+            return {
+                "_raw_hex": raw_data.hex(),
+                "_struct_type": struct_name,
+                "_error": str(e),
+            }
+
+    def _decode_struct_from_bytes(
+        self, data: bytes, schema: StructSchema
+    ) -> Dict[str, Any]:
+        """Decode struct data from bytes using schema"""
+        result = {"_struct_type": schema.name}
+        offset = 0
+
+        for field in schema.fields:
+            if offset >= len(data):
+                logger.warning(
+                    f"Not enough data for field {field.name} in struct {schema.name}"
+                )
+                break
+
+            try:
+                if field.type == "double":
+                    if offset + 8 <= len(data):
+                        value = struct.unpack("<d", data[offset : offset + 8])[0]
+                        result[field.name] = value
+                        offset += 8
+                    else:
+                        logger.warning(
+                            f"Not enough bytes for double field {field.name}"
+                        )
+                        break
+
+                elif field.type == "float":
+                    if offset + 4 <= len(data):
+                        value = struct.unpack("<f", data[offset : offset + 4])[0]
+                        result[field.name] = value
+                        offset += 4
+                    else:
+                        logger.warning(f"Not enough bytes for float field {field.name}")
+                        break
+
+                elif field.type == "int64":
+                    if offset + 8 <= len(data):
+                        value = struct.unpack("<q", data[offset : offset + 8])[0]
+                        result[field.name] = value
+                        offset += 8
+                    else:
+                        logger.warning(f"Not enough bytes for int64 field {field.name}")
+                        break
+
+                elif field.type == "int32":
+                    if offset + 4 <= len(data):
+                        value = struct.unpack("<i", data[offset : offset + 4])[0]
+                        result[field.name] = value
+                        offset += 4
+                    else:
+                        logger.warning(f"Not enough bytes for int32 field {field.name}")
+                        break
+
+                elif field.type == "boolean":
+                    if offset + 1 <= len(data):
+                        value = bool(data[offset])
+                        result[field.name] = value
+                        offset += 1
+                    else:
+                        logger.warning(
+                            f"Not enough bytes for boolean field {field.name}"
+                        )
+                        break
+
+                elif field.type in self.struct_schemas:
+                    # Nested struct
+                    nested_schema = self.struct_schemas[field.type]
+                    nested_size = self._calculate_struct_size(nested_schema)
+                    if offset + nested_size <= len(data):
+                        nested_data = data[offset : offset + nested_size]
+                        nested_value = self._decode_struct_from_bytes(
+                            nested_data, nested_schema
+                        )
+                        result[field.name] = nested_value
+                        offset += nested_size
+                    else:
+                        logger.warning(
+                            f"Not enough bytes for nested struct field {field.name}"
+                        )
+                        break
+                else:
+                    logger.warning(f"Unknown field type: {field.type}")
+                    break
+
+            except Exception as e:
+                logger.warning(f"Error decoding field {field.name}: {e}")
+                break
+
+        return result
+
+    def _calculate_struct_size(self, schema: StructSchema) -> int:
+        """Calculate the size in bytes of a struct"""
+        size = 0
+        for field in schema.fields:
+            if field.type == "double":
+                size += 8
+            elif field.type == "float":
+                size += 4
+            elif field.type == "int64":
+                size += 8
+            elif field.type == "int32":
+                size += 4
+            elif field.type == "boolean":
+                size += 1
+            elif field.type in self.struct_schemas:
+                size += self._calculate_struct_size(self.struct_schemas[field.type])
+            else:
+                # Unknown type, assume 8 bytes
+                size += 8
+        return size
+
+    def _decode_struct_array(
+        self, data: bytes, struct_name: str
+    ) -> List[Dict[str, Any]]:
+        """Decode an array of structs"""
+        if struct_name not in self.struct_schemas:
+            return [
+                {
+                    "_error": f"Unknown struct type: {struct_name}",
+                    "_raw_hex": data.hex(),
+                }
+            ]
+
+        schema = self.struct_schemas[struct_name]
+        struct_size = self._calculate_struct_size(schema)
+
+        if len(data) % struct_size != 0:
+            logger.warning(
+                f"Data size {len(data)} not divisible by struct size {struct_size}"
+            )
+
+        result = []
+        offset = 0
+
+        while offset + struct_size <= len(data):
+            struct_data = data[offset : offset + struct_size]
+            try:
+                decoded_struct = self._decode_struct_from_bytes(struct_data, schema)
+                result.append(decoded_struct)
+            except Exception as e:
+                logger.warning(f"Error decoding struct at offset {offset}: {e}")
+                break
+            offset += struct_size
+
+        return result
 
     def _detect_robot_events(self):
         """Detect robot events from known signal patterns"""
@@ -680,4 +933,73 @@ class DataLogManager:
                     )
                 )
 
-        return resampled
+    def get_struct_schemas(self) -> Dict[str, StructSchema]:
+        """Get all available struct schemas"""
+        return self.struct_schemas.copy()
+
+    def get_struct_schema(self, struct_name: str) -> Optional[StructSchema]:
+        """Get a specific struct schema"""
+        return self.struct_schemas.get(struct_name)
+
+    def get_struct_signals(self) -> List[str]:
+        """Get all signals that use struct types"""
+        struct_signals = []
+        for signal_name, signal_info in self.signals.items():
+            if signal_info.type.startswith("struct:"):
+                struct_signals.append(signal_name)
+        return struct_signals
+
+    def get_signals_by_struct_type(self, struct_name: str) -> List[str]:
+        """Get all signals that use a specific struct type"""
+        target_type = f"struct:{struct_name}"
+        matching_signals = []
+
+        for signal_name, signal_info in self.signals.items():
+            if signal_info.type == target_type:
+                matching_signals.append(signal_name)
+
+        return matching_signals
+
+    def get_struct_field_as_signal(
+        self, signal_name: str, field_path: str
+    ) -> List[SignalValue]:
+        """Extract a specific field from struct data as a virtual signal
+
+        Args:
+            signal_name: Name of the struct signal
+            field_path: Dot-separated path to field (e.g., "translation.x")
+        """
+        if signal_name not in self.signal_data:
+            return []
+
+        field_values = []
+        path_parts = field_path.split(".")
+
+        for signal_value in self.signal_data[signal_name]:
+            if not isinstance(signal_value.value, dict):
+                continue
+
+            # Navigate through the field path
+            current_value = signal_value.value
+            try:
+                for part in path_parts:
+                    if isinstance(current_value, dict) and part in current_value:
+                        current_value = current_value[part]
+                    else:
+                        current_value = None
+                        break
+
+                if current_value is not None:
+                    field_values.append(
+                        SignalValue(
+                            timestamp=signal_value.timestamp,
+                            value=current_value,
+                            valid=signal_value.valid,
+                        )
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Error extracting field {field_path} from {signal_name}: {e}"
+                )
+
+        return field_values

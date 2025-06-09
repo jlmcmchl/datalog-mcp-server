@@ -43,6 +43,75 @@ mcp = FastMCP("DataLog MCP Server", lifespan=datalog_context)
 
 
 @mcp.tool
+def datalog_get_struct_schemas(ctx: Context = None) -> Dict[str, Dict[str, Any]]:
+    """Get all available struct schemas"""
+    datalog_manager: DataLogManager = ctx.request_context.lifespan_context
+    schemas = datalog_manager.get_struct_schemas()
+
+    # Convert to serializable format
+    result = {}
+    for name, schema in schemas.items():
+        result[name] = {
+            "name": schema.name,
+            "fields": [
+                {"name": field.name, "type": field.type} for field in schema.fields
+            ],
+        }
+
+    return result
+
+
+@mcp.tool
+def datalog_get_struct_schema(
+    struct_name: str, ctx: Context = None
+) -> Optional[Dict[str, Any]]:
+    """Get a specific struct schema"""
+    datalog_manager: DataLogManager = ctx.request_context.lifespan_context
+    schema = datalog_manager.get_struct_schema(struct_name)
+
+    if schema:
+        return {
+            "name": schema.name,
+            "fields": [
+                {"name": field.name, "type": field.type} for field in schema.fields
+            ],
+        }
+    return None
+
+
+@mcp.tool
+def datalog_get_struct_signals(ctx: Context = None) -> List[str]:
+    """Get all signals that use struct types"""
+    datalog_manager: DataLogManager = ctx.request_context.lifespan_context
+    return datalog_manager.get_struct_signals()
+
+
+@mcp.tool
+def datalog_get_signals_by_struct_type(
+    struct_name: str, ctx: Context = None
+) -> List[str]:
+    """Get all signals that use a specific struct type"""
+    datalog_manager: DataLogManager = ctx.request_context.lifespan_context
+    return datalog_manager.get_signals_by_struct_type(struct_name)
+
+
+@mcp.tool
+def datalog_get_struct_field_as_signal(
+    signal_name: str, field_path: str, ctx: Context = None
+) -> List[Dict[str, Any]]:
+    """Extract a specific field from struct data as a virtual signal"""
+    datalog_manager: DataLogManager = ctx.request_context.lifespan_context
+    field_values = datalog_manager.get_struct_field_as_signal(
+        unquote(signal_name), field_path
+    )
+
+    return [
+        {"timestamp": sv.timestamp, "value": sv.value, "valid": sv.valid}
+        for sv in field_values
+    ]
+
+
+@mcp.tool
 async def datalog_load(
     filename: str,
     ctx: Context = None,
@@ -468,6 +537,31 @@ def get_datalog_events(ctx: Context = None) -> Dict[str, Any]:
             }
             for event in events
         ]
+    }
+
+
+@mcp.resource("datalog://structs", mime_type="application/json")
+def get_datalog_structs(ctx: Context = None) -> Dict[str, Any]:
+    """Get struct schemas as a resource"""
+    datalog_manager: DataLogManager = ctx.request_context.lifespan_context
+    schemas = datalog_manager.get_struct_schemas()
+    struct_signals = datalog_manager.get_struct_signals()
+
+    return {
+        "schemas": {
+            name: {
+                "name": schema.name,
+                "fields": [
+                    {"name": field.name, "type": field.type} for field in schema.fields
+                ],
+            }
+            for name, schema in schemas.items()
+        },
+        "struct_signals": struct_signals,
+        "signal_counts_by_type": {
+            name: len(datalog_manager.get_signals_by_struct_type(name))
+            for name in schemas.keys()
+        },
     }
 
 

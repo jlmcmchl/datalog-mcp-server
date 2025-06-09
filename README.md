@@ -2,6 +2,8 @@
 
 A Model Context Protocol (MCP) server that provides comprehensive access to WPILib datalog files for FRC robot telemetry analysis. This server enables AI agents to analyze robot performance data, debug issues, and extract insights from competition logs.
 
+#### Full conversation with claude: https://claude.ai/share/b4cbe0c5-cbb7-480c-bba6-3a7120264a38
+
 ## Features
 
 ### Core Functionality
@@ -10,6 +12,13 @@ A Model Context Protocol (MCP) server that provides comprehensive access to WPIL
 - **Time-based queries** - Get data at specific timestamps or ranges
 - **Bulk operations** - Efficiently process multiple signals at once
 - **Statistical analysis** - Calculate min/max/mean/std for numeric signals
+
+### 🆕 Struct Schema Support
+- **Automatic struct parsing** - Decode complex WPILib structures (Pose2d, ChassisSpeeds, etc.)
+- **Schema discovery** - Extract struct definitions from datalog files
+- **Field extraction** - Access individual struct fields as virtual signals
+- **Type-safe decoding** - Proper handling of nested structs and arrays
+- **Built-in WPILib types** - Support for all common FRC data structures
 
 ### Advanced Analysis
 - **Event detection** - Find robot events (mode changes, brownouts, etc.)
@@ -100,12 +109,41 @@ python datalog_mcp_server.py
 - `datalog_get_match_phases()` - Auto/teleop/endgame
 - `datalog_find_match_data()` - Competition information
 
+### Struct Schema Operations
+- `datalog_get_struct_schemas()` - Get all struct type definitions
+- `datalog_get_struct_schema(struct_name)` - Get specific struct schema
+- `datalog_get_struct_signals()` - Find all signals using structs
+- `datalog_get_signals_by_struct_type(struct_name)` - Find signals by type
+- `datalog_get_struct_field_as_signal(signal, field_path)` - Extract struct fields
+
 ### Utilities
 - `datalog_export_to_csv(signals, filename, time_range=None)` - CSV export
 - `datalog_preload_signals(signals)` - Cache signals
 - `datalog_resample_signal(signal, rate_hz)` - Resample data
 
 ## Example Use Cases
+
+### Struct Data Analysis
+```python
+# Get available struct schemas
+schemas = await datalog_get_struct_schemas()
+print(f"Found {len(schemas)} struct types")
+
+# Find all Pose2d signals
+pose_signals = await datalog_get_signals_by_struct_type("Pose2d")
+
+# Extract robot X position over time
+x_position = await datalog_get_struct_field_as_signal(
+    "/Robot//DriveState/Pose", 
+    "translation.x"
+)
+
+# Extract swerve module speeds
+module_speeds = await datalog_get_struct_field_as_signal(
+    "/Robot//DriveState/ModuleStates",
+    "0.speed"  # First module's speed
+)
+```
 
 ### Performance Analysis
 ```python
@@ -174,6 +212,43 @@ for phase in phases:
     print(f"{phase['phase']}: max speed = {phase_stats['max']:.1f} m/s")
 ```
 
+## Supported WPILib Struct Types
+
+The server automatically recognizes and parses these WPILib struct types:
+
+| Struct Type | Fields | Description |
+|-------------|--------|-------------|
+| `Pose2d` | translation (Translation2d), rotation (Rotation2d) | Robot pose on field |
+| `Pose3d` | translation (Translation3d), rotation (Rotation3d) | 3D robot pose |
+| `Translation2d` | x (double), y (double) | 2D coordinates |
+| `Translation3d` | x, y, z (double) | 3D coordinates |
+| `Rotation2d` | value (double) | 2D rotation in radians |
+| `Rotation3d` | quaternion (Quaternion) | 3D rotation |
+| `Quaternion` | w, x, y, z (double) | Quaternion components |
+| `ChassisSpeeds` | vx, vy, omega (double) | Robot velocity |
+| `SwerveModuleState` | speed (double), angle (Rotation2d) | Swerve module target |
+| `SwerveModulePosition` | distance (double), angle (Rotation2d) | Swerve module position |
+
+### Struct Field Access
+
+Use dot notation to access nested fields:
+
+```python
+# Robot position components
+x_pos = await datalog_get_struct_field_as_signal("/Robot//DriveState/Pose", "translation.x")
+y_pos = await datalog_get_struct_field_as_signal("/Robot//DriveState/Pose", "translation.y")
+heading = await datalog_get_struct_field_as_signal("/Robot//DriveState/Pose", "rotation.value")
+
+# Chassis velocity components  
+vx = await datalog_get_struct_field_as_signal("/Robot//DriveState/Speeds", "vx")
+vy = await datalog_get_struct_field_as_signal("/Robot//DriveState/Speeds", "vy")
+omega = await datalog_get_struct_field_as_signal("/Robot//DriveState/Speeds", "omega")
+
+# Individual swerve module data (for arrays, use index)
+module0_speed = await datalog_get_struct_field_as_signal("/Robot//DriveState/ModuleStates", "0.speed")
+module0_angle = await datalog_get_struct_field_as_signal("/Robot//DriveState/ModuleStates", "0.angle.value")
+```
+
 ## Resources
 
 The server provides browsable resources for data exploration:
@@ -182,6 +257,7 @@ The server provides browsable resources for data exploration:
 - `datalog://hierarchy` - Signal organization structure  
 - `datalog://events` - Robot events timeline
 - `datalog://match` - Match phases and competition data
+- `datalog://structs` - 🆕 Struct schemas and type information
 - `datalog://{signal_name}` - Individual signal data and metadata
 
 ## Data Format
