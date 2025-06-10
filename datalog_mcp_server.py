@@ -17,8 +17,6 @@ from datalog_manager import (
     DataLogManager,
     SignalInfo,
     SignalValue,
-    RobotEvent,
-    MatchPhase,
     LogInfo,
 )
 
@@ -133,7 +131,6 @@ async def datalog_load(
                     "end_time": log_info.end_time,
                     "total_records": log_info.total_records,
                     "signal_count": log_info.signal_count,
-                    "robot_events_count": len(log_info.robot_events),
                 },
             }
         else:
@@ -416,58 +413,8 @@ def datalog_get_log_info(ctx: Context = None) -> Optional[Dict[str, Any]]:
             "end_time": log_info.end_time,
             "total_records": log_info.total_records,
             "signal_count": log_info.signal_count,
-            "robot_events": [
-                {
-                    "timestamp": event.timestamp,
-                    "event_type": event.event_type,
-                    "description": event.description,
-                    "data": event.data,
-                }
-                for event in log_info.robot_events
-            ],
         }
     return None
-
-
-@mcp.tool
-def datalog_get_robot_events(ctx: Context = None) -> List[Dict[str, Any]]:
-    """Get robot events detected in the log"""
-    datalog_manager: DataLogManager = ctx.request_context.lifespan_context
-    events = datalog_manager.get_robot_events()
-
-    return [
-        {
-            "timestamp": event.timestamp,
-            "event_type": event.event_type,
-            "description": event.description,
-            "data": event.data,
-        }
-        for event in events
-    ]
-
-
-@mcp.tool
-def datalog_find_match_data(ctx: Context = None) -> Dict[str, Any]:
-    """Detect competition match info if logged"""
-    datalog_manager: DataLogManager = ctx.request_context.lifespan_context
-    return datalog_manager.find_match_data()
-
-
-@mcp.tool
-def datalog_get_match_phases(ctx: Context = None) -> List[Dict[str, Any]]:
-    """Get detected match phases"""
-    datalog_manager: DataLogManager = ctx.request_context.lifespan_context
-    phases = datalog_manager.get_match_phases()
-
-    return [
-        {
-            "phase": phase.phase,
-            "start_time": phase.start_time,
-            "end_time": phase.end_time,
-            "duration": phase.duration,
-        }
-        for phase in phases
-    ]
 
 
 @mcp.tool
@@ -521,25 +468,6 @@ def get_datalog_hierarchy(ctx: Context = None) -> Dict[str, Any]:
     return {"hierarchy": datalog_manager.get_signal_hierarchy()}
 
 
-@mcp.resource("datalog://events", mime_type="application/json")
-def get_datalog_events(ctx: Context = None) -> Dict[str, Any]:
-    """Get robot events as a resource"""
-    datalog_manager: DataLogManager = ctx.request_context.lifespan_context
-    events = datalog_manager.get_robot_events()
-
-    return {
-        "events": [
-            {
-                "timestamp": event.timestamp,
-                "event_type": event.event_type,
-                "description": event.description,
-                "data": event.data,
-            }
-            for event in events
-        ]
-    }
-
-
 @mcp.resource("datalog://structs", mime_type="application/json")
 def get_datalog_structs(ctx: Context = None) -> Dict[str, Any]:
     """Get struct schemas as a resource"""
@@ -562,27 +490,6 @@ def get_datalog_structs(ctx: Context = None) -> Dict[str, Any]:
             name: len(datalog_manager.get_signals_by_struct_type(name))
             for name in schemas.keys()
         },
-    }
-
-
-@mcp.resource("datalog://match", mime_type="application/json")
-def get_datalog_match_info(ctx: Context = None) -> Dict[str, Any]:
-    """Get match information as a resource"""
-    datalog_manager: DataLogManager = ctx.request_context.lifespan_context
-    match_data = datalog_manager.find_match_data()
-    phases = datalog_manager.get_match_phases()
-
-    return {
-        "match_data": match_data,
-        "phases": [
-            {
-                "phase": phase.phase,
-                "start_time": phase.start_time,
-                "end_time": phase.end_time,
-                "duration": phase.duration,
-            }
-            for phase in phases
-        ],
     }
 
 

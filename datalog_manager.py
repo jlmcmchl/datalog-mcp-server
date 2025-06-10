@@ -65,26 +65,6 @@ class SignalValue:
 
 
 @dataclass
-class RobotEvent:
-    """Robot event detected in the log"""
-
-    timestamp: float
-    event_type: str
-    description: str
-    data: Dict[str, Any]
-
-
-@dataclass
-class MatchPhase:
-    """Match phase timing information"""
-
-    phase: str  # "auto", "teleop", "endgame", "disabled"
-    start_time: float
-    end_time: float
-    duration: float
-
-
-@dataclass
 class LogInfo:
     """Overall datalog file information"""
 
@@ -95,7 +75,6 @@ class LogInfo:
     end_time: float
     total_records: int
     signal_count: int
-    robot_events: List[RobotEvent]
 
 
 class DataLogManager:
@@ -106,8 +85,6 @@ class DataLogManager:
         self.filename = None
         self.signals: Dict[str, SignalInfo] = {}
         self.signal_data: Dict[str, List[SignalValue]] = defaultdict(list)
-        self.robot_events: List[RobotEvent] = []
-        self.match_phases: List[MatchPhase] = []
         self.log_info: Optional[LogInfo] = None
         self._preloaded_signals: set = set()
         self.access_lock = threading.Lock()
@@ -126,8 +103,6 @@ class DataLogManager:
 
                 self.filename = filename
                 self._parse_log()
-                self._detect_robot_events()
-                self._detect_match_phases()
                 self._generate_log_info()
 
                 logger.info(f"Successfully loaded datalog: {filename}")
@@ -454,87 +429,6 @@ class DataLogManager:
 
         return result
 
-    def _detect_robot_events(self):
-        """Detect robot events from known signal patterns"""
-        self.robot_events = []
-
-        # Look for DS connection events
-        if "/FMSInfo/FMSControlData" in self.signals:
-            # Detect match start/end from FMS data
-            pass
-
-        # Look for robot mode changes
-        if "/DriverStation/RobotMode" in self.signal_data:
-            prev_mode = None
-            for signal_value in self.signal_data["/DriverStation/RobotMode"]:
-                if prev_mode != signal_value.value:
-                    event = RobotEvent(
-                        timestamp=signal_value.timestamp,
-                        event_type="mode_change",
-                        description=f"Robot mode changed to {signal_value.value}",
-                        data={"mode": signal_value.value, "previous_mode": prev_mode},
-                    )
-                    self.robot_events.append(event)
-                    prev_mode = signal_value.value
-
-        # Look for brownout events
-        if "/DriverStation/BrownedOut" in self.signal_data:
-            for signal_value in self.signal_data["/DriverStation/BrownedOut"]:
-                if signal_value.value:
-                    event = RobotEvent(
-                        timestamp=signal_value.timestamp,
-                        event_type="brownout",
-                        description="Robot brownout detected",
-                        data={},
-                    )
-                    self.robot_events.append(event)
-
-    def _detect_match_phases(self):
-        """Detect match phases from robot mode data"""
-        self.match_phases = []
-
-        if "/DriverStation/RobotMode" not in self.signal_data:
-            return
-
-        current_phase = None
-        phase_start = None
-
-        for signal_value in self.signal_data["/DriverStation/RobotMode"]:
-            mode = signal_value.value
-            timestamp = signal_value.timestamp
-
-            if mode == "auto" and current_phase != "auto":
-                if current_phase and phase_start:
-                    self._finish_phase(current_phase, phase_start, timestamp)
-                current_phase = "auto"
-                phase_start = timestamp
-
-            elif mode == "teleop" and current_phase != "teleop":
-                if current_phase and phase_start:
-                    self._finish_phase(current_phase, phase_start, timestamp)
-                current_phase = "teleop"
-                phase_start = timestamp
-
-            elif mode == "disabled" and current_phase != "disabled":
-                if current_phase and phase_start:
-                    self._finish_phase(current_phase, phase_start, timestamp)
-                current_phase = "disabled"
-                phase_start = timestamp
-
-        # Finish the last phase
-        if current_phase and phase_start and self.log_info:
-            self._finish_phase(current_phase, phase_start, self.log_info.end_time)
-
-    def _finish_phase(self, phase: str, start_time: float, end_time: float):
-        """Helper to finish a match phase"""
-        match_phase = MatchPhase(
-            phase=phase,
-            start_time=start_time,
-            end_time=end_time,
-            duration=end_time - start_time,
-        )
-        self.match_phases.append(match_phase)
-
     def _generate_log_info(self):
         """Generate overall log information"""
         if not self.filename:
@@ -563,7 +457,6 @@ class DataLogManager:
             end_time=end_time,
             total_records=total_records,
             signal_count=len(self.signals),
-            robot_events=self.robot_events,
         )
 
     def list_signals(self, pattern: Optional[str] = None) -> List[str]:
@@ -853,29 +746,6 @@ class DataLogManager:
         """Get overall log file information"""
         return self.log_info
 
-    def get_robot_events(self) -> List[RobotEvent]:
-        """Get robot events detected in the log"""
-        return self.robot_events
-
-    def find_match_data(self) -> Dict[str, Any]:
-        """Detect competition match info if logged"""
-        match_data = {}
-
-        # Look for FMS data
-        fms_signals = [
-            name for name in self.signals.keys() if "FMS" in name or "Match" in name
-        ]
-        if fms_signals:
-            match_data["fms_connected"] = True
-            match_data["fms_signals"] = fms_signals
-        else:
-            match_data["fms_connected"] = False
-
-        # Add match phases
-        match_data["phases"] = [asdict(phase) for phase in self.match_phases]
-
-        return match_data
-
     def get_network_table_signals(self) -> List[str]:
         """Filter to only NetworkTables-sourced data"""
         nt_signals = []
@@ -886,10 +756,6 @@ class DataLogManager:
             ) == "NetworkTables" or signal_name.startswith("/NT/"):
                 nt_signals.append(signal_name)
         return nt_signals
-
-    def get_match_phases(self) -> List[MatchPhase]:
-        """Get detected match phases"""
-        return self.match_phases
 
     def resample_signal(
         self, signal_name: str, new_rate_hz: float
