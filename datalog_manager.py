@@ -211,19 +211,7 @@ class DataLogManager:
     def _decode_record_value(self, record: DataLogRecord, signal_type: str) -> Any:
         """Decode a record value based on its type"""
         try:
-            if signal_type == "boolean":
-                return record.getBoolean()
-            elif signal_type == "int64":
-                return record.getInteger()
-            elif signal_type == "float" or signal_type == "double":
-                return record.getDouble()
-            elif signal_type == "string":
-                return record.getString()
-            elif signal_type.startswith("struct:"):
-                # Handle struct types
-                struct_name = signal_type[7:]  # Remove "struct:" prefix
-                return self._decode_struct(record, struct_name)
-            elif signal_type.endswith("[]"):
+            if signal_type.endswith("[]"):
                 # Array types
                 base_type = signal_type[:-2]
                 if base_type == "boolean":
@@ -240,17 +228,30 @@ class DataLogManager:
                     struct_name = base_type[7:]
                     return self._decode_struct_array(raw_data, struct_name)
             else:
-                # Raw data for unknown types
-                raw_data = record.getRaw()
-                # Try to make it JSON-serializable
-                if isinstance(raw_data, bytes):
-                    try:
-                        # Try to decode as UTF-8 first
-                        return raw_data.decode("utf-8")
-                    except UnicodeDecodeError:
-                        # If that fails, return as hex string
-                        return raw_data.hex()
-                return raw_data
+                if signal_type == "boolean":
+                    return record.getBoolean()
+                elif signal_type == "int64":
+                    return record.getInteger()
+                elif signal_type == "float" or signal_type == "double":
+                    return record.getDouble()
+                elif signal_type == "string":
+                    return record.getString()
+                elif signal_type.startswith("struct:"):
+                    # Handle non-array struct types
+                    struct_name = signal_type[7:]  # Remove "struct:" prefix
+                    return self._decode_struct(record, struct_name)
+                else:
+                    # Raw data for unknown types
+                    raw_data = record.getRaw()
+                    # Try to make it JSON-serializable
+                    if isinstance(raw_data, bytes):
+                        try:
+                            # Try to decode as UTF-8 first
+                            return raw_data.decode("utf-8")
+                        except UnicodeDecodeError:
+                            # If that fails, return as hex string
+                            return raw_data.hex()
+                    return raw_data
         except Exception as e:
             logger.warning(f"Error decoding record of type {signal_type}: {e}")
             return None
@@ -753,7 +754,7 @@ class DataLogManager:
             # Check metadata for NT source indicator
             if signal_info.metadata.get(
                 "source"
-            ) == "NetworkTables" or signal_name.startswith("/NT/"):
+            ) == "NetworkTables" or signal_name.startswith("NT:/"):
                 nt_signals.append(signal_name)
         return nt_signals
 
