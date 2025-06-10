@@ -23,7 +23,7 @@ from datalog_manager import (
 from fastmcp import FastMCP, Context
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
+logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
 
